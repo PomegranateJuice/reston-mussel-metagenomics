@@ -26,6 +26,7 @@ library(dplyr)
 library(devtools)
 library(data.table)
 library(ggplot2)
+library(RColorBrewer)
 ```
 
 ## Load and clean the data
@@ -103,6 +104,8 @@ ps_all <- phyloseq(OTU, TAX, SAMPLE) %>% ## DEBUG TREE
     Class   != "Chloroplast"
   )
 
+sample_data(ps_all)$Year <- as.character(sample_data(ps_all)$Year)
+
 ps.comp = microbiome::transform(ps_all, "compositional")
 ```
 
@@ -116,15 +119,67 @@ ps.filter_u <- subset_samples(ps_all, Location == "Upstream")
 ps.filter_d <- subset_samples(ps_all, Location == "Downstream")
 ps.filter_m <- subset_samples(ps_all, Location == "MusselZone")
 
-ps.comp_2023 <- subset_samples(ps.comp, Year == 2023)
-ps.comp_2024 <- subset_samples(ps.comp, Year == 2024)
-ps.comp_ud <- subset_samples(ps.comp, Location != "MusselZone")
-ps.comp_u <- subset_samples(ps.comp, Location == "Upstream")
-ps.comp_d <- subset_samples(ps.comp, Location == "Downstream")
-ps.comp_m <- subset_samples(ps.comp, Location == "MusselZone")
+ps.comp_2023 <- microbiome::transform(ps.filter_2023, "compositional")
+ps.comp_2024 <- microbiome::transform(ps.filter_2024, "compositional")
+ps.comp_ud <- microbiome::transform(ps.filter_ud, "compositional")
+ps.comp_u <- microbiome::transform(ps.filter_u, "compositional")
+ps.comp_d <- microbiome::transform(ps.filter_d, "compositional")
+ps.comp_m <- microbiome::transform(ps.filter_m, "compositional")
+
+ps.clr_2023 <- microbiome::transform(ps.filter_2023, "clr")
+ps.clr_2024 <- microbiome::transform(ps.filter_2024, "clr")
+ps.clr_ud <- microbiome::transform(ps.filter_ud, "clr")
+ps.clr_u <- microbiome::transform(ps.filter_u, "clr")
+ps.clr_d <- microbiome::transform(ps.filter_d, "clr")
+ps.clr_m <- microbiome::transform(ps.filter_m, "clr")
 ```
 
 # ALPHA DIVERSITY
+https://microbiome.github.io/OMA/docs/devel/pages/alpha_diversity.html
+
+## Alpha diversity and pairwise comparison for all years
+
+```{r Alpha diversity all years}
+# Update factor levels in sample metadata
+sample_data(ps_all)$LocYear <- factor(sample_data(ps_all)$LocYear,
+                                      levels = c("Upstream_2023", "Upstream_2024", "MusselZone_2023", "MusselZone_2024", "Downstream_2023", "Downstream_2024"))
+
+
+# Creates boxplots depicting the observed and Shannon values between locations and years
+plot_richness(ps_all, x="LocYear", measures=c("Observed", "Shannon")) +
+              geom_boxplot(aes(fill = LocYear)) +
+              scale_fill_brewer(palette = "Set2") +
+              theme_classic() +
+              theme(strip.background = element_blank(), axis.text.x.bottom = element_text(angle = -90))
+
+rich_all = estimate_richness(ps_all, measures = c("Observed", "Shannon"))
+rich$LocYear <- sample_data(ps_all)$LocYear
+rich_summary <- rich %>%
+                group_by(LocYear) %>%
+                summarise(
+                  Observed_Mean = mean(Observed),
+                  Observed_SD   = sd(Observed),
+                  Shannon_Mean  = mean(Shannon),
+                  Shannon_SD    = sd(Shannon)
+                ) %>%
+                as.data.frame()
+rich_summary
+
+# Wilcoxon test based on Shannon Diversity for 2023 and 2024
+wilcox.shannon <- pairwise.wilcox.test(rich_all$Shannon, sample_data(ps_all)$LocYear, p.adjust.method = "BH")
+
+# Format Wilcoxon test table
+tab.shannon <- wilcox.shannon$p.value %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Group1") %>%
+  pivot_longer(cols = -Group1, names_to = "Group2", values_to = "Adjusted_p_value") %>%
+  filter(!is.na(Adjusted_p_value)) %>%
+  mutate(Adjusted_p_value = signif(Adjusted_p_value, 3)) %>%
+  arrange(Adjusted_p_value)
+
+# View Wilcoxon test result for Shannon diversity
+tab.shannon
+```
 
 ## Alpha diversity and pairwise comparison for 2023
 
@@ -250,50 +305,6 @@ tab.shannon <- wilcox.shannon$p.value %>%
 tab.shannon
 ```
 
-## Alpha diversity and pairwise comparison for all years
-
-```{r Alpha diversity all years}
-# Update factor levels in sample metadata
-sample_data(ps_all)$LocYear <- factor(sample_data(ps_all)$LocYear,
-                                      levels = c("Upstream_2023", "Upstream_2024", "MusselZone_2023", "MusselZone_2024", "Downstream_2023", "Downstream_2024"))
-
-
-# Creates boxplots depicting the observed and Shannon values between locations and years
-plot_richness(ps_all, x="LocYear", measures=c("Observed", "Shannon")) +
-              geom_boxplot(aes(fill = LocYear)) +
-              scale_fill_brewer(palette = "Set2") +
-              theme_classic() +
-              theme(strip.background = element_blank(), axis.text.x.bottom = element_text(angle = -90))
-
-rich_all = estimate_richness(ps_all, measures = c("Observed", "Shannon"))
-rich$LocYear <- sample_data(ps_all)$LocYear
-rich_summary <- rich %>%
-                group_by(LocYear) %>%
-                summarise(
-                  Observed_Mean = mean(Observed),
-                  Observed_SD   = sd(Observed),
-                  Shannon_Mean  = mean(Shannon),
-                  Shannon_SD    = sd(Shannon)
-                ) %>%
-                as.data.frame()
-rich_summary
-
-# Wilcoxon test based on Shannon Diversity for 2023 and 2024
-wilcox.shannon <- pairwise.wilcox.test(rich_all$Shannon, sample_data(ps_all)$LocYear, p.adjust.method = "BH")
-
-# Format Wilcoxon test table
-tab.shannon <- wilcox.shannon$p.value %>%
-  as.data.frame() %>%
-  rownames_to_column(var = "Group1") %>%
-  pivot_longer(cols = -Group1, names_to = "Group2", values_to = "Adjusted_p_value") %>%
-  filter(!is.na(Adjusted_p_value)) %>%
-  mutate(Adjusted_p_value = signif(Adjusted_p_value, 3)) %>%
-  arrange(Adjusted_p_value)
-
-# View Wilcoxon test result for Shannon diversity
-tab.shannon
-```
-
 ## Alpha diversity and pairwise comparison between years for upstream zone
 
 ```{r Alpha diversity upstream}
@@ -380,19 +391,34 @@ tab.shannon
 
 # BETA DIVERSITY
 
-## PCoA using Bray Curtis distances for 2023
+## PCoA and PERMANOVA using Bray Curtis and Jaccard distances for 2023
 
-```{r PCoA 2023}
-dist = phyloseq::distance(ps.filter_2023, method="bray")
-ordination = ordinate(ps.filter_2023, method="PCoA", distance=dist)
-plot_ordination(ps.filter_2023, ordination, color="Location", title="2023 PCoA by Location") + 
+```{r Beta diversity 2023}
+# Create PCoA ordination plot for 2023 with Bray Curtis distances
+dist = phyloseq::distance(ps.comp_2023, method="bray")
+ordination = ordinate(ps.comp_2023, method="PCoA", distance=dist)
+plot_ordination(ps.comp_2023, ordination, color="Location", title="2023 PCoA by Location (Bray-Curtis)") + 
+                geom_point(aes(color = Location)) +
+                scale_color_brewer(palette = "Set2") +
                 theme_classic() +
                 theme(strip.background = element_blank())
+                # stat_ellipse(level = 0.8) TOO FEW SAMPLES TO CREATE ELLIPSES
+
+# Create PCoA ordination plot for 2023 with Jaccard distances
+dist = phyloseq::distance(ps.comp_2023, method="jaccard")
+ordination = ordinate(ps.comp_2023, method="PCoA", distance=dist)
+plot_ordination(ps.comp_2023, ordination, color="Location", title="2023 PCoA by Location (Jaccard)") + 
+                geom_point(aes(color = Location)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank())
+
+# PERMANOVA test based on Bray Curtis distances for 2023
 cbn <- combn(x=unique(metadata$Location), m = 2)
 p <- c()
 
 for(i in 1:ncol(cbn)){
-  ps.subs <- subset_samples(ps.filter_2023, Location %in% cbn[,i])
+  ps.subs <- subset_samples(ps.comp_2023, Location %in% cbn[,i])
   metadata_sub <- data.frame(sample_data(ps.subs))
   permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ Location, 
                                 data = metadata_sub)
@@ -401,24 +427,15 @@ for(i in 1:ncol(cbn)){
 p.adj <- p.adjust(p, method = "BH")
 p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
 p.table.permanova
-```
 
-## PCoA using Bray Curtis distances for 2024
-
-```{r PCoA 2024}
-dist = phyloseq::distance(ps.filter_2024, method="bray")
-ordination = ordinate(ps.filter_2024, method="PCoA", distance=dist)
-plot_ordination(ps.filter_2024, ordination, color="Location", title="2024 PCoA by Location") +
-                theme_classic() +
-                theme(strip.background = element_blank())
-
+# PERMANOVA test based on Jaccard distances for 2023
 cbn <- combn(x=unique(metadata$Location), m = 2)
 p <- c()
 
 for(i in 1:ncol(cbn)){
-  ps.subs <- subset_samples(ps.filter_2024, Location %in% cbn[,i])
+  ps.subs <- subset_samples(ps.comp_2023, Location %in% cbn[,i])
   metadata_sub <- data.frame(sample_data(ps.subs))
-  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ Location, 
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "jaccard") ~ Location, 
                                 data = metadata_sub)
   p <- c(p, permanova_pairwise$`Pr(>F)`[1])
 }
@@ -427,20 +444,251 @@ p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
 p.table.permanova
 ```
 
-## PCOA for both years
+## PCoA and PERMANOVA using Bray Curtis and Jaccard distances for 2024
 
-```{r PCoA for both years}
-dist = phyloseq::distance(ps.filter_all, method="bray")
-ordination = ordinate(ps.filter_all, method="PCoA", distance=dist)
-plot_ordination(ps.filter_all, ordination, color="LocYear", title="Overall PCoA by Location and Year") +
+```{r Beta diversity 2024}
+# Create PCoA ordination plot for 2024 with Bray Curtis distances
+dist = phyloseq::distance(ps.comp_2024, method="bray")
+ordination = ordinate(ps.comp_2024, method="PCoA", distance=dist)
+plot_ordination(ps.comp_2024, ordination, color="Location", title="2024 PCoA by Location (Bray-Curtis)") +
+                geom_point(aes(color = Location)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank()) +
+                stat_ellipse(level = 0.8)
+
+# Create PCoA ordination plot for 2024 with Jaccard distances
+dist = phyloseq::distance(ps.comp_2024, method="jaccard")
+ordination = ordinate(ps.comp_2024, method="PCoA", distance=dist)
+plot_ordination(ps.comp_2024, ordination, color="Location", title="2024 PCoA by Location (Jaccard)") + 
+                geom_point(aes(color = Location)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank()) +
+                stat_ellipse(level = 0.8)
+
+# PERMANOVA test based on Bray Curtis distances for 2024
+cbn <- combn(x=unique(metadata$Location), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_2024, Location %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ Location, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+
+# PERMANOVA test based on Jaccard distances for 2024
+cbn <- combn(x=unique(metadata$Location), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_2024, Location %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "jaccard") ~ Location, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+```
+
+## PCoA and PERMANOVA using Bray Curtis and Jaccard distances for upstream
+
+```{r Beta diversity upstream}
+# Create PCoA ordination plot for 2024 with Bray Curtis distances
+dist = phyloseq::distance(ps.comp_u, method="bray")
+ordination = ordinate(ps.comp_u, method="PCoA", distance=dist)
+plot_ordination(ps.comp_u, ordination, color="Year", title="Upstream PCoA by Year (Bray-Curtis)") +
+                geom_point(aes(color = Year)) +
+                scale_color_brewer(palette = "Set2") +
                 theme_classic() +
                 theme(strip.background = element_blank())
+                # stat_ellipse(level = 0.8) TOO FEW SAMPLES TO CREATE ELLIPSES
 
+# Create PCoA ordination plot for 2024 with Jaccard distances
+dist = phyloseq::distance(ps.comp_u, method="jaccard")
+ordination = ordinate(ps.comp_u, method="PCoA", distance=dist)
+plot_ordination(ps.comp_u, ordination, color="Year", title="Upstream PCoA by Year (Jaccard)") +
+                geom_point(aes(color = Year)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank())
+                # stat_ellipse(level = 0.8) TOO FEW SAMPLES TO CREATE ELLIPSES
+
+# PERMANOVA test based on Bray Curtis distances for 2024
+cbn <- combn(x=unique(metadata$Year), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_u, Year %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ Year, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+
+# PERMANOVA test based on Jaccard distances for 2024
+cbn <- combn(x=unique(metadata$Year), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_u, Year %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "jaccard") ~ Year, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+```
+
+## PCoA and PERMANOVA using Bray Curtis distances and Jaccard for mussel zone
+
+```{r Beta diversity mussel zone}
+# Create PCoA ordination plot for 2024 with Bray-Curtis distances
+dist = phyloseq::distance(ps.comp_m, method="bray")
+ordination = ordinate(ps.comp_m, method="PCoA", distance=dist)
+plot_ordination(ps.comp_m, ordination, color="Year", title="Mussel Zone PCoA by Year (Bray-Curtis)") +
+                geom_point(aes(color = Year)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank()) + 
+                stat_ellipse(level = 0.8)
+
+# Create PCoA ordination plot for 2024 with Jaccard distances
+dist = phyloseq::distance(ps.comp_m, method="jaccard")
+ordination = ordinate(ps.comp_m, method="PCoA", distance=dist)
+plot_ordination(ps.comp_m, ordination, color="Year", title="Mussel Zone PCoA by Year (Jaccard)") +
+                geom_point(aes(color = Year)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank()) + 
+                stat_ellipse(level = 0.8)
+
+# PERMANOVA test based on Bray-Curtis distances for 2024
+cbn <- combn(x=unique(metadata$Year), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_m, Year %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ Year, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+
+# PERMANOVA test based on Jaccard distances for 2024
+cbn <- combn(x=unique(metadata$Year), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_m, Year %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "jaccard") ~ Year, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+```
+
+## PCoA and PERMANOVA using Bray Curtis and Jaccard distances for downstream
+
+```{r Beta diversity mussel zone}
+# Create PCoA ordination plot for 2024 with Bray-Curtis distances
+dist = phyloseq::distance(ps.comp_d, method="bray")
+ordination = ordinate(ps.comp_d, method="PCoA", distance=dist)
+plot_ordination(ps.comp_d, ordination, color="Year", title="Downstream PCoA by Year (Bray-Curtis)") +
+                geom_point(aes(color = Year)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank())
+                # stat_ellipse(level = 0.8) TOO FEW SAMPLES TO CREATE ELLIPSES
+
+# Create PCoA ordination plot for 2024 with Jaccard distances
+dist = phyloseq::distance(ps.comp_d, method="jaccard")
+ordination = ordinate(ps.comp_d, method="PCoA", distance=dist)
+plot_ordination(ps.comp_d, ordination, color="Year", title="Downstream PCoA by Year (Jaccard)") +
+                geom_point(aes(color = Year)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank())
+                # stat_ellipse(level = 0.8) TOO FEW SAMPLES TO CREATE ELLIPSES
+
+# PERMANOVA test based on Bray-Curtis distances for 2024
+cbn <- combn(x=unique(metadata$Year), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_d, Year %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ Year, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+
+# PERMANOVA test based on Jaccard distances for 2024
+cbn <- combn(x=unique(metadata$Year), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps.comp_d, Year %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "jaccard") ~ Year, 
+                                data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
+```
+
+## PCOA and PERMANOVA using Bray Curtis and Jaccard distances for both years
+
+```{r Beta diversity for both years}
+# Create PCoA ordination plot for 2024 with Bray-Curtis distances
+dist = phyloseq::distance(ps_all, method="bray")
+ordination = ordinate(ps_all, method="PCoA", distance=dist)
+plot_ordination(ps_all, ordination, color="LocYear", title="Overall PCoA by Location and Year (Bray-Curtis)") +
+                geom_point(aes(color = LocYear)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank()) +
+                stat_ellipse(level = 0.8)
+
+# Create PCoA ordination plot for 2024 with Jaccard distances
+dist = phyloseq::distance(ps_all, method="jaccard")
+ordination = ordinate(ps_all, method="PCoA", distance=dist)
+plot_ordination(ps_all, ordination, color="LocYear", title="Overall PCoA by Location and Year (Jaccard)") +
+                geom_point(aes(color = LocYear)) +
+                scale_color_brewer(palette = "Set2") +
+                theme_classic() +
+                theme(strip.background = element_blank()) +
+                stat_ellipse(level = 0.8)
+
+# PERMANOVA test based on Bray-Curtis distances for 2024
 cbn <- combn(x=unique(metadata$LocYear), m = 2)
 p <- c()
 
 for(i in 1:ncol(cbn)){
-  ps.subs <- subset_samples(ps.filter_all, LocYear %in% cbn[,i])
+  ps.subs <- subset_samples(ps_all, LocYear %in% cbn[,i])
   metadata_sub <- data.frame(sample_data(ps.subs))
   permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "bray") ~ LocYear, 
                                data = metadata_sub)
@@ -449,30 +697,144 @@ for(i in 1:ncol(cbn)){
 p.adj <- p.adjust(p, method = "BH")
 p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
 p.table.permanova
+
+# PERMANOVA test based on Jaccard distances for 2024
+cbn <- combn(x=unique(metadata$LocYear), m = 2)
+p <- c()
+
+for(i in 1:ncol(cbn)){
+  ps.subs <- subset_samples(ps_all, LocYear %in% cbn[,i])
+  metadata_sub <- data.frame(sample_data(ps.subs))
+  permanova_pairwise <- adonis2(phyloseq::distance(ps.subs, method = "jaccard") ~ LocYear, 
+                               data = metadata_sub)
+  p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+}
+p.adj <- p.adjust(p, method = "BH")
+p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+p.table.permanova
 ```
 
-# ANCOM-BC2 ANALYSIS WITH HOLM METHOD
+# TAXONOMIC COMPOSITION
+
+## Phylum abundance barplot for all samples
+```{r By phylum for all samples}
+# Convert to relative abundances
+ps.rel = transform_sample_counts(ps_all, function(x) x/sum(x)*100)
+
+# Agglomerate taxa
+glom <- tax_glom(ps.rel, taxrank = 'Phylum', NArm = FALSE)
+ps.melt <- psmelt(glom)
+
+# Change to character for easy-adjusted level
+ps.melt$Phylum <- as.character(ps.melt$Phylum)
+
+ps.melt <- ps.melt %>%
+           group_by(Year, Phylum) %>%
+           mutate(median=median(Abundance))
+
+# Select group median > 0.05
+keep <- unique(ps.melt$Phylum[ps.melt$median > 0.05])
+ps.melt$Phylum[!(ps.melt$Phylum %in% keep)] <- "< 0.5%"
+
+# Group the same rows together
+ps.melt_sum <- ps.melt %>%
+               group_by(Sample, Year, Phylum) %>%
+               summarise(Abundance=sum(Abundance))
+
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+
+# Create phylum abundance barplot
+ggplot(ps.melt_sum, aes(x = Sample, y = Abundance, fill = Phylum)) + 
+       geom_bar(stat = "identity", aes(fill=Phylum)) + 
+       scale_fill_manual(values = mycolors) +
+       labs(x="", y="%") +
+       facet_wrap(~Year, scales= "free_x", nrow=1) +
+       theme_classic() + 
+       theme(strip.background = element_blank(), 
+             axis.text.x.bottom = element_text(angle = -90))
+```
+## Genus abundance barplot for all samples
+```{r By genus for all samples}
+# Convert to relative abundances
+ps.rel = transform_sample_counts(ps_all, function(x) x/sum(x)*100)
+
+# Agglomerate taxa
+glom <- tax_glom(ps.rel, taxrank = 'Genus', NArm = FALSE)
+ps.melt <- psmelt(glom)
+
+# Change to character for easy-adjusted level
+ps.melt$Genus <- as.character(ps.melt$Genus)
+
+ps.melt <- ps.melt %>%
+           group_by(Year, Genus) %>%
+           mutate(median=median(Abundance))
+
+# Select group median > 1
+keep <- unique(ps.melt$Genus[ps.melt$median > 1])
+ps.melt$Genus[!(ps.melt$Genus %in% keep)] <- "< 1%"
+
+# Group the same rows together
+ps.melt_sum <- ps.melt %>%
+               group_by(Sample, Year, Genus) %>%
+               summarise(Abundance=sum(Abundance))
+
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+
+# Create genus abundance barplot
+ggplot(ps.melt_sum, aes(x = Sample, y = Abundance, fill = Genus)) + 
+       geom_bar(stat = "identity", aes(fill=Genus)) + 
+       scale_fill_manual(values = mycolors) +
+       labs(x="", y="%") +
+       facet_wrap(~Year, scales= "free_x", nrow=1) +
+       theme_classic() + 
+       theme(strip.background = element_blank(), 
+             axis.text.x.bottom = element_text(angle = -90))
+```
+
+# ANCOM-BC2, DESeq2, ALDEx2, metagenomeSeq, Masslin2,  DIFFERENTIAL ABUNDANCE
+
+## DESeq2
+```{r DESeq2 for mussel zone}
+# Factorize for DESeq2
+sample_data(ps.filter_m)$Year<- as.factor(sample_data(ps.filter_m)$Year) 
+ps.taxa <- tax_glom(ps.filter_m, taxrank = 'Genus', NArm = FALSE)
+
+# Pairwise comparison between stream combinations
+ps.taxa.sub <- subset_samples(ps.taxa, Year %in% c("2023", "2024"))
+
+# Filter sparse features, with > 90% zeros
+ps.taxa.pse.sub <- prune_taxa(rowSums(otu_table(ps.taxa.sub) == 0) < 
+                              ncol(otu_table(ps.taxa.sub)) * 0.9, ps.taxa.sub)
+ps.ds = phyloseq_to_deseq2(ps.taxa.pse.sub, ~Year)
+
+# Use alternative estimator on a condition of "every gene contains a sample with a zero"
+ds <- estimateSizeFactors(ps.ds, type="poscounts")
+ds = DESeq(ds, test="Wald", fitType="parametric")
+alpha = 0.05 
+res = results(ds, alpha=alpha)
+res = res[order(res$padj, na.last=NA), ]
+taxa_sig = rownames(res[1:20,]) # Select bottom 20 with lowest p.adj values
+ps.taxa.rel <- transform_sample_counts(ps.filter_m, function(x) x/sum(x)*100)
+ps.taxa.rel.sig <- prune_taxa(taxa_sig, ps.taxa.rel)
+ps.taxa.rel.sig <- prune_samples(colnames(otu_table(ps.taxa.pse.sub)), ps.taxa.rel.sig)
+```
 
 ## ANCOM-BC2 between upstream and downstream for both 2023 and 2024
-https://www.bioconductor.org/packages/release/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC2.html
-https://www.bioconductor.org/packages/devel/bioc/manuals/ANCOMBC/man/ANCOMBC.pdf
+
+<https://www.bioconductor.org/packages/release/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC2.html> <https://www.bioconductor.org/packages/devel/bioc/manuals/ANCOMBC/man/ANCOMBC.pdf>
+
 ```{r ANCOM for both years}
 set.seed(123)
 
-sample_data(ps.filter_ud)$Location <- as.factor(sample_data(ps.filter_ud)$Location)
-
-pseq_perm = ps.filter_ud
-metadata_perm = microbiome::meta(pseq_perm)
-metadata_perm$Location = sample(metadata_perm$Location)
-phyloseq::sample_data(pseq_perm) = metadata_perm
-
 # Run ancombc2 function
-output.family = ancombc2(data = pseq_perm, tax_level = "Family",
-                         fix_formula = "Location", rand_formula = NULL,
-                         group = "Location", struc_zero = TRUE, neg_lb = TRUE,
-                         n_cl = 4, verbose = TRUE,
-                         global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = TRUE,
-                         lme_control = lme4::lmerControl())
+output.family = ancombc2(data = ps_all, tax_level = "Family",
+                        fix_formula = "Location + Year", rand_formula = "(1 | Year)",
+                        group = "Location", 
+                        struc_zero = TRUE, neg_lb = TRUE,
+                        n_cl = 4, verbose = TRUE,
+                        global = TRUE, pairwise = TRUE, dunnet = TRUE)
 
 # Primary analysis
 res_family = output.family$res
@@ -491,16 +853,15 @@ lo = floor(min(df_fig_location$lfc))
 up = ceiling(max(df_fig_location$lfc))
 mid = (lo + up) / 2
 fig_location = df_fig_location %>%
- ggplot(aes(x = "Downstream Samples", y = taxon, fill = lfc)) +
- geom_tile(color = "black") +
- scale_fill_gradient2(low = "lightblue", high = "navy", mid = "blue",
- na.value = "white", midpoint = mid, limit = c(lo, up),
-name = NULL) +
- geom_text(aes(label = lfc, color = color), size = 4) +
- scale_color_identity(guide = "none") +
- labs(x = NULL, y = NULL, title = "Differentually Abundant Families as Compared to Upstream Samples") +
- theme_minimal() +
- theme(plot.title = element_text(hjust = 0.5))
+               ggplot(aes(x = "Downstream Samples", y = taxon, fill = lfc)) +
+               geom_tile(color = "black") +
+               scale_fill_gradient2(low = "lightblue", high = "navy", mid = "blue",
+               na.value = "white", midpoint = mid, limit = c(lo, up), name = NULL) +
+               geom_text(aes(label = lfc, color = color), size = 4) +
+               scale_color_identity(guide = "none") +
+               labs(x = NULL, y = NULL, title = "Differentually Abundant Families as Compared to Upstream Samples") +
+               theme_minimal() +
+               theme(plot.title = element_text(hjust = 0.5))
 fig_location
 ```
 
@@ -625,3 +986,7 @@ df_fig_location
 
 
 ```
+
+# PICRUSt2 FUNCTIONAL DIVERSITY
+
+# NETWORK ANALYSIS
