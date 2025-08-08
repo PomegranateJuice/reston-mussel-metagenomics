@@ -1,0 +1,326 @@
+﻿## Login to QIIME2 on JupyterHub
+conda activate qiime2
+	
+
+## Use cd to open a working directory
+cd mussel
+	
+
+## Import metadata.tsv and manifest.tsv
+* Metadata 
+* Manifest 
+
+
+## Import demultiplexed sequences
+* 2023 Data
+* 2024 Data  
+
+
+## Import paired end reads
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifest.tsv \
+  --output-path demux_seqs.qza \
+  --input-format PairedEndFastqManifestPhred33V2
+	
+
+## Summarize sequence data (quality and sequence count)
+qiime demux summarize \
+  --i-data ./demux_seqs.qza \
+  --o-visualization ./demux_seqs.qzv
+	
+
+Open demux_seqs.qzv in QIIME2 View to see:
+* Sequence quality distribution (choose truncation length for DADA2)
+* Number of reads per sample (ensure even distribution)
+  
+
+
+
+
+
+######################################################
+#           Quality Filtering & Denoising            #
+######################################################
+
+
+## Denoising (removes noize, merges reads, dereplicate sequences)
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs demux_seqs.qza \
+  --p-trunc-len-f 220 \
+  --p-trunc-len-r 200 \
+  --p-n-threads 0 \
+  --o-table table.qza \
+  --o-representative-sequences rep-seqs.qza \
+  --o-denoising-stats denoising-stats.qza \
+  --verbose
+	
+
+## Visualize denoising-stats.qza
+qiime feature-table tabulate-seqs \
+  --i-data rep-seqs.qza \
+  --o-visualization rep-seqs.qzv
+	
+
+## Feature table
+qiime feature-table summarize \
+  --i-table ./table.qza \
+  --m-sample-metadata-file ./metadata.tsv \
+  --o-visualization ./table.qzv
+	
+
+######################################################
+#                Taxonomy Classification             #
+######################################################
+
+
+## Download reference database
+wget http://ftp.microbio.me/greengenes_release/2022.10/2022.10.backbone.full-length.fna.qza
+	
+
+## Map reads onto the reference database
+qiime greengenes2 non-v4-16s \
+ --i-table table.qza \
+ --i-sequences rep-seqs.qza \
+ --i-backbone 2022.10.backbone.full-length.fna.qza \
+ --p-threads 8 \
+ --o-mapped-table table-gg2.qza \
+ --o-representatives rep-seqs-gg2.qza
+	
+
+## Download taxonomy information for ASVs
+wget http://ftp.microbio.me/greengenes_release/2022.10/2022.10.taxonomy.asv.nwk.qza
+	
+
+## Classify taxonomy
+qiime greengenes2 taxonomy-from-table \
+  --i-reference-taxonomy 2022.10.taxonomy.asv.nwk.qza \
+  --i-table table-gg2.qza \
+  --o-classification taxonomy.qza \
+  --verbose
+	
+
+## Visualize taxonomy file
+qiime metadata tabulate \
+  --m-input-file ./taxonomy.qza \
+  --o-visualization ./taxonomy.qzv
+	
+
+######################################################
+#                   Creating a Tree                  #
+######################################################
+
+
+qiime phylogeny align-to-tree-mafft-fasttree \
+  --i-sequences rep-seqs-gg2.qza \
+  --o-alignment aligned-rep-seqs-gg2.qza \
+  --o-masked-alignment masked-aligned-rep-seqs-gg2.qza \
+  --o-tree unrooted-tree.qza \
+  --o-rooted-tree rooted-tree.qza \
+  --verbose
+	
+
+######################################################
+#                     Moving to R                    #
+######################################################
+
+
+## Create new phyloseq folder and copy the following files: taxonomy.qza, table.qza, metadata.tsv, and tree.qza
+cp table.qza phyloseq
+cp rooted-tree.qza phyloseq
+cp taxonomy.qza phyloseq
+cp metadata.tsv phyloseq
+	
+
+## Open phyloseq folder
+
+
+cd phyloseq
+	 
+## Convert files into .tsv and .nwk
+for i in *.qza; do
+qiime tools export --input-path $i --output-path .
+done
+
+
+biom convert -i feature-table.biom -o table.tsv --to-tsv
+	
+
+######################################################
+#                       DEICODE                      #
+######################################################
+
+
+## Open DEICODE folder
+
+
+cd deicode
+	 
+## Convert taxonomy.qza to taxonomy.tsv (if not done already)
+
+
+qiime tools export \
+  --input-path taxonomy.qza \
+  --output-path exported-taxonomy
+	
+
+## Create filtered tables
+
+
+# Glade 
+qiime feature-table filter-samples \
+  --i-table table-gg2.qza \
+  --m-metadata-file metadata.tsv \
+  --p-where "Stream='Glade'" \
+  --o-filtered-table glade-filtered-table.qza
+
+
+# Snakeden
+qiime feature-table filter-samples \
+  --i-table table-gg2.qza \
+  --m-metadata-file metadata.tsv \
+  --p-where "Stream='Snakeden'" \
+  --o-filtered-table snakeden-filtered-table.qza
+
+
+# Glade Mussel Zone
+qiime feature-table filter-samples \
+  --i-table table-gg2.qza \
+  --m-metadata-file metadata.tsv \
+  --p-where "Stream='Glade' AND MusselAffected='MusselZone'" \
+  --o-filtered-table glade-mussel-filtered-table.qza
+
+
+# Snakeden Mussel Zone
+qiime feature-table filter-samples \
+  --i-table table-gg2.qza \
+  --m-metadata-file metadata.tsv \
+  --p-where "Stream='Snakeden' AND MusselAffected='MusselZone'" \
+  --o-filtered-table snakeden-mussel-filtered-table.qza
+	
+
+## Run DEICODE
+
+
+# Comparison between Glade and Snakeden
+qiime deicode rpca \
+  --i-table table-gg2.qza \
+  --p-min-feature-count 10 \
+  --p-min-sample-count 500 \
+  --o-biplot ordination.qza \
+  --o-distance-matrix distance.qza
+
+
+qiime emperor biplot \
+   --i-biplot ordination.qza \
+   --m-sample-metadata-file metadata.tsv \
+   --m-feature-metadata-file taxonomy.tsv \
+   --o-visualization deicode.qzv \
+   --p-number-of-features 8
+
+
+# Comparison within Glade
+qiime deicode rpca \
+  --i-table glade-filtered-table.qza \
+  --p-min-feature-count 10 \
+  --p-min-sample-count 500 \
+  --o-biplot glade-ordination.qza \
+  --o-distance-matrix glade-distance.qza
+
+
+qiime emperor biplot \
+   --i-biplot glade-ordination.qza \
+   --m-sample-metadata-file metadata.tsv \
+   --m-feature-metadata-file taxonomy.tsv \
+   --o-visualization glade-deicode.qzv \
+   --p-number-of-features 8
+
+
+# Comparison within Snakeden
+qiime deicode rpca \
+  --i-table snakeden-filtered-table.qza \
+  --p-min-feature-count 10 \
+  --p-min-sample-count 500 \
+  --o-biplot snakeden-ordination.qza \
+  --o-distance-matrix snakeden-distance.qza
+
+
+qiime emperor biplot \
+   --i-biplot snakeden-ordination.qza \
+   --m-sample-metadata-file metadata.tsv \
+   --m-feature-metadata-file taxonomy.tsv \
+   --o-visualization snakeden-deicode.qzv \
+   --p-number-of-features 8
+
+
+# Comparison within Glade Mussel Zone
+qiime deicode rpca \
+  --i-table glade-mussel-filtered-table.qza \
+  --p-min-feature-count 10 \
+  --p-min-sample-count 500 \
+  --o-biplot glade-mussel-ordination.qza \
+  --o-distance-matrix glade-mussel-distance.qza
+
+
+qiime emperor biplot \
+   --i-biplot glade-mussel-ordination.qza \
+   --m-sample-metadata-file metadata.tsv \
+   --m-feature-metadata-file taxonomy.tsv \
+   --o-visualization glade-mussel-deicode.qzv \
+   --p-number-of-features 8
+
+
+# Comparison within Snakeden Mussel Zone
+qiime deicode rpca \
+  --i-table snakeden-mussel-filtered-table.qza \
+  --p-min-feature-count 10 \
+  --p-min-sample-count 500 \
+  --o-biplot snakeden-mussel-ordination.qza \
+  --o-distance-matrix snakeden-mussel-distance.qza
+
+
+qiime emperor biplot \
+   --i-biplot snakeden-mussel-ordination.qza \
+   --m-sample-metadata-file metadata.tsv \
+   --m-feature-metadata-file taxonomy.tsv \
+   --o-visualization snakeden-mussel-deicode.qzv \
+   --p-number-of-features 8
+	
+
+######################################################
+#                       PICRUSt2                     #
+######################################################
+
+
+## Install PICRUSt2 with Conda
+conda create -n picrust2 -c conda-forge -c bioconda picrust2
+conda activate picrust2
+	
+
+## Convert rep-seqs.qza to FASTA
+* Creates dna-sequences.fasta in ‘exported-rep-seqs’ folder, file was then moved to the main mussels folder
+qiime tools export \
+  --input-path rep-seqs-gg2.qza \
+  --output-path exported-rep-seqs
+	
+
+## Convert table.qza to BIOM
+* Creates feature-table.biom in ‘exported-table’ folder, file was then moved to the main mussels folder
+qiime tools export \
+  --input-path table-gg2.qza \
+  --output-path exported-table
+	
+
+## Runs full PICRUSt2 pipeline
+picrust2_pipeline.py \
+  -s dna-sequences.fasta \
+  -i feature-table.biom \
+  -o picrust2_out_pipeline \
+  -p 32 \
+  --remove_intermediate \
+  --verbose
+	
+
+* Which taxa are predicted to contribute to a function within different samples
+* Whether predicted functional abundance profiles differ between samples from different treatments
+* Whether the predicted abundance of certain functions differs between samples from different treatments
