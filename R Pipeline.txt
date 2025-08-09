@@ -1,0 +1,739 @@
+﻿---
+title: "Bioinformatics Pipeline"
+author: "Quynh-Chi Phan and Jennifer Zhang"
+date: "2025-07-26"
+output:
+  pdf_document: default
+---
+
+
+## Install and load the following packages
+
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install(c("phyloseq", "microbiome", "ComplexHeatmap"), update = FALSE)
+
+
+if(!require(SpiecEasi)){
+  devtools::install_github("zdk123/SpiecEasi")
+}
+
+
+if(!require(SPRING)){
+  devtools::install_github("GraceYoon/SPRING")
+}
+
+
+if(!require(NetCoMi)){
+    devtools::install_github(
+        "stefpeschel/NetCoMi",
+        repos = c("https://cloud.r-project.org/", BiocManager::repositories())
+    )
+}
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(phyloseq)
+library(vegan)
+library(DESeq2)
+library(ANCOMBC)
+library(NetCoMi)
+library(ComplexHeatmap)
+library(microbiome)
+library(knitr)
+library(dplyr)
+library(devtools)
+library(data.table)
+library(ggplot2)
+library(RColorBrewer)
+```
+
+
+## Load and clean the data
+
+
+-   Imports the metadata, feature table, and taxonomy
+-   Cleans up taxonomy files
+
+
+All files were previously generated in QIIME2.
+
+
+```{r Load and clean data}
+otu <- read.table(file = "table.tsv", sep = "\t", header = T, row.names = 1, 
+                  skip = 1, comment.char = "")
+
+
+metadata <- read.table(file = "metadata.tsv", sep = "\t", header = T, row.names = 1)
+
+
+taxonomy <- read.table(file = "taxonomy.tsv", sep = "\t", header = T ,row.names = 1)
+
+
+tax <- taxonomy %>%
+  select(Taxon) %>% 
+  separate(Taxon, c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), "; ")
+
+
+tax.clean <- data.frame(row.names = row.names(tax),
+                        Domain = str_replace(tax[,1], "d__",""),
+                        Phylum = str_replace(tax[,2], "p__",""),
+                        Class = str_replace(tax[,3], "c__",""),
+                        Order = str_replace(tax[,4], "o__",""),
+                        Family = str_replace(tax[,5], "f__",""),
+                        Genus = str_replace(tax[,6], "g__",""),
+                        Species = str_replace(tax[,7], "s__",""),
+                        stringsAsFactors = FALSE)
+
+
+tax.clean[is.na(tax.clean)] <- ""
+tax.clean[tax.clean=="__"] <- ""
+
+
+for (i in 1:nrow(tax.clean)){
+  if (tax.clean[i,7] != ""){
+    tax.clean$Species[i] <- paste(tax.clean$Genus[i], tax.clean$Species[i], sep = " ")
+  } else if (tax.clean[i,2] == ""){
+    domain <- paste("Unclassified", tax.clean[i,1], sep = " ")
+    tax.clean[i, 2:7] <- domain
+  } else if (tax.clean[i,3] == ""){
+    phylum <- paste("Unclassified", tax.clean[i,2], sep = " ")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i,4] == ""){
+    class <- paste("Unclassified", tax.clean[i,3], sep = " ")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i,5] == ""){
+    order <- paste("Unclassified", tax.clean[i,4], sep = " ")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i,6] == ""){
+    family <- paste("Unclassified", tax.clean[i,5], sep = " ")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i,7] == ""){
+    tax.clean$Species[i] <- paste("Unclassified ",tax.clean$Genus[i], sep = " ")
+  }
+}
+```
+
+
+## Create complete Phyloseq object and filter out mitochondria and chloroplast.
+
+
+```{r Create ps object}
+OTU = otu_table(as.matrix(otu), taxa_are_rows = TRUE)
+TAX = tax_table(as.matrix(tax.clean))
+SAMPLE <- sample_data(metadata)
+TREE = read_tree("tree.nwk")
+
+
+# Merge data and save into PhyloSeq object 'ps_all'
+ps_all <- phyloseq(OTU, TAX, SAMPLE, TREE) %>%
+  # Filter out Eukaryotes, Archaea, mitochondria, and chloroplasts
+  subset_taxa(
+    Domain == "Bacteria" &
+    Family  != "mitochondria" &
+    Class   != "Chloroplast"
+  )
+
+
+sample_data(ps_all)$Year <- as.character(sample_data(ps_all)$Year)
+
+
+ps.comp <- microbiome::transform(ps_all, transform = "compositional")
+```
+
+
+## Subset ps_all and ps.comp based on stream, year, and location
+
+
+```{r Subset year/location}
+# Snakeden ps objects
+ps.filter_s <- subset_samples(ps_all, Stream == "Snakeden")
+
+
+ps.filter_s_2023 <- subset_samples(ps.filter_s, Year == 2023)
+ps.filter_s_2024 <- subset_samples(ps.filter_s, Year == 2024)
+ps.filter_s_c <- subset_samples(ps.filter_s, MusselAffected == "Control")
+ps.filter_s_m <- subset_samples(ps.filter_s, MusselAffected == "MusselZone")
+
+
+ps.comp_s_2023 <- microbiome::transform(ps.filter_s_2023, "compositional")
+ps.comp_s_2024 <- microbiome::transform(ps.filter_s_2024, "compositional")
+ps.comp_s_c <- microbiome::transform(ps.filter_s_c, "compositional")
+ps.comp_s_m <- microbiome::transform(ps.filter_s_m, "compositional")
+
+
+ps.clr_s_2023 <- microbiome::transform(ps.filter_s_2023, "clr")
+ps.clr_s_2024 <- microbiome::transform(ps.filter_s_2024, "clr")
+ps.clr_s_c <- microbiome::transform(ps.filter_s_c, "clr")
+ps.clr_s_m <- microbiome::transform(ps.filter_s_m, "clr")
+
+
+# Glade ps objects
+ps.filter_g <- subset_samples(ps_all, Stream == "Glade")
+
+
+ps.filter_g_2023 <- subset_samples(ps.filter_g, Year == 2023)
+ps.filter_g_2024 <- subset_samples(ps.filter_g, Year == 2024)
+ps.filter_g_c <- subset_samples(ps.filter_g, MusselAffected == "Control")
+ps.filter_g_m <- subset_samples(ps.filter_g, MusselAffected == "MusselZone")
+
+
+ps.comp_g_2023 <- microbiome::transform(ps.filter_g_2023, "compositional")
+ps.comp_g_2024 <- microbiome::transform(ps.filter_g_2024, "compositional")
+ps.comp_g_c <- microbiome::transform(ps.filter_g_c, "compositional")
+ps.comp_g_m <- microbiome::transform(ps.filter_g_m, "compositional")
+
+
+ps.clr_g_2023 <- microbiome::transform(ps.filter_g_2023, "clr")
+ps.clr_g_2024 <- microbiome::transform(ps.filter_g_2024, "clr")
+ps.clr_g_c <- microbiome::transform(ps.filter_g_c, "clr")
+ps.clr_g_m <- microbiome::transform(ps.filter_g_m, "clr")
+```
+
+
+# ALPHA DIVERSITY
+https://microbiome.github.io/OMA/docs/devel/pages/alpha_diversity.html
+
+
+```{r run_alpha}
+run_alpha <- function(ps_obj, group_var) {
+  # Convert sample data to dataframe
+  meta <- as(sample_data(ps_obj), "data.frame")
+  
+  # Estimate richness
+  rich <- estimate_richness(ps_obj, measures = c("Observed", "Shannon", "Simpson"))
+  rich[[group_var]] <- meta[[group_var]]
+  
+  # Boxplot
+  p <- plot_richness(ps_obj, x = group_var, measures = c("Observed", "Shannon", "Simpson")) +
+    geom_boxplot(aes_string(fill = group_var)) +
+    scale_fill_brewer(palette = "Set2") +
+    theme_classic() +
+    theme(strip.background = element_blank(),
+          axis.text.x = element_text(angle = -90, hjust = 0)) +
+    labs(x = group_var, y = "Diversity Measure")
+
+
+  # Summary stats
+  rich_summary <- rich %>%
+    group_by(.data[[group_var]]) %>%
+    summarise(
+      Observed_Mean = mean(Observed),
+      Observed_SD   = sd(Observed),
+      Shannon_Mean  = mean(Shannon),
+      Shannon_SD    = sd(Shannon),
+      Simpson_Mean  = mean(Simpson),
+      Simpson_SD    = sd(Simpson),
+      .groups = 'drop'
+    ) %>%
+    as.data.frame()
+  
+  # Wilcoxon test
+  wilcox.shannon <- pairwise.wilcox.test(rich$Shannon, rich[[group_var]], p.adjust.method = "BH")
+  
+  tab.shannon <- wilcox.shannon$p.value %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "Group1") %>%
+    pivot_longer(cols = -Group1, names_to = "Group2", values_to = "Adjusted_p_value") %>%
+    filter(!is.na(Adjusted_p_value)) %>%
+    mutate(Adjusted_p_value = signif(Adjusted_p_value, 3)) %>%
+    arrange(Adjusted_p_value)
+  
+  return(list(
+    richness_plot = p,
+    richness_summary = rich_summary,
+    stats_table = tab.shannon
+  ))
+}
+
+
+run_alpha_interaction <- function(ps_obj){
+  rich <- estimate_richness(ps_obj, measures = c("Observed", "Shannon", "Simpson"))
+  rich$SampleID <- rownames(rich)
+  meta <- as(sample_data(ps_obj), "data.frame")
+  meta$SampleID <- rownames(meta)
+  
+  # Boxplot
+  p <- plot_richness(ps_obj, x = "Year", measures = c("Observed", "Shannon", "Simpson")) +
+    geom_boxplot(aes_string(fill = "MusselAffected")) +
+    scale_fill_brewer(palette = "Set2") +
+    theme_classic() +
+    theme(strip.background = element_blank(),
+          axis.text.x = element_text(angle = -90, hjust = 0)) +
+    labs(x = "Year * Mussel Affected Interaction", y = "Diversity Measure")
+  
+  # Merge richness and metadata
+  alpha_df <- merge(rich, meta, by = "SampleID")
+  
+  # Interaction ANOVA
+  interaction_table <- summary(aov(Shannon ~ Year * MusselAffected, data = alpha_df))
+  
+  return(list(
+    richness_plot = p,
+    stats_table = interaction_table
+  ))
+}
+```
+
+
+# Snakeden vs. Glade 
+```{r}
+run_alpha(ps_all, group_var = "Stream")
+```
+
+
+## Glade
+```{r}
+# 2023 vs. 2024 
+run_alpha(ps.filter_g, group_var = "Year")
+
+
+# Control vs. Mussel Affected 2023
+run_alpha(ps.filter_g_2023, group_var = "MusselAffected")
+
+
+# Control vs. Mussel Affected 2024
+run_alpha(ps.filter_g_2024, group_var = "MusselAffected")
+
+
+# 2023 vs. 2024 in MusselAffected
+run_alpha(ps.filter_g_m, group_var = "Year")
+
+
+# Year * MusselAffected interaction
+run_alpha_interaction(ps.filter_g)
+```
+
+
+## Snakeden
+```{r}
+# 2023 vs. 2024 
+run_alpha(ps.filter_s, group_var = "Year")
+
+
+# Control vs. Mussel Affected 2023
+run_alpha(ps.filter_s_2023, group_var = "MusselAffected")
+
+
+# Control vs. Mussel Affected 2024
+run_alpha(ps.filter_s_2024, group_var = "MusselAffected")
+
+
+# 2023 vs. 2024 in MusselAffected
+run_alpha(ps.filter_s_m, group_var = "Year")
+
+
+# Year * MusselAffected interaction
+run_alpha_interaction(ps.filter_s)
+```
+
+
+# BETA DIVERSITY
+
+
+## PCoA and PERMANOVA using Bray Curtis and Jaccard distances between Snakeden and Glade
+
+
+```{r run_beta}
+run_beta <- function(ps_obj, group_var){
+  meta <- data.frame(sample_data(ps_obj))
+  
+  # Create PCoA ordination plot with Bray Curtis distances
+  dist = phyloseq::distance(ps_obj, method="bray")
+  ordination = ordinate(ps_obj, method="PCoA", distance=dist)
+  plot <- plot_ordination(ps_obj, ordination, color=group_var, title=paste("PCoA (Bray-Curtis) - ", group_var)) + 
+    scale_color_brewer(palette = "Set2") +
+    theme_classic() +
+    theme(strip.background = element_blank()) +
+    stat_ellipse(level = 0.8)
+
+
+  # PERMANOVA test based on Bray Curtis distances
+  cbn <- combn(x=unique(meta[[group_var]]), m = 2)
+  p <- c()
+  
+  for(i in 1:ncol(cbn)){
+    meta_sub <- meta[meta[[group_var]] %in% cbn[, i], ]
+    ps.subs <- prune_samples(rownames(meta_sub), ps_obj)
+    
+    formula <- as.formula(paste("phyloseq::distance(ps.subs, method = 'bray')  ~ ", group_var))
+    permanova <- adonis2(formula, data = meta_sub)
+    p <- c(p, permanova_pairwise$`Pr(>F)`[1])
+  }
+  p.adj <- p.adjust(p, method = "BH")
+  p.table.permanova <- cbind.data.frame(t(cbn), p=p, p.adj=p.adj)
+  p.table.permanova
+  
+  # Dispersion test (PERMDISP)
+  disp <- betadisper(dist, group = meta[[group_var]])
+  disp_anova <- anova(disp)
+  
+  return(list(
+    beta_plot = plot,
+    stats_table = p.table.permanova,
+    dispersion_anova = disp_anova
+  ))
+}
+```
+
+
+```{r run_beta_interaction}
+run_beta_interaction <- function(ps_obj){
+  meta <- data.frame(sample_data(ps_obj))
+  
+  # Create PCoA ordination plot with Bray Curtis distances
+  dist = phyloseq::distance(ps_obj, method="bray")
+  ordination = ordinate(ps_obj, method="PCoA", distance=dist)
+  plot <- plot_ordination(ps_obj, ordination, color="Year", shape="MusselAffected", title="PCoA (Bray-Curtis) - Year * Mussel Affected Interaction") + 
+    scale_color_brewer(palette = "Set2") +
+    theme_classic() +
+    theme(strip.background = element_blank()) +
+    stat_ellipse(level = 0.8)
+
+
+  # PERMANOVA test based on Bray Curtis distances
+  permanova <- adonis2(dist ~ Year * MusselAffected, data = meta)
+
+
+  # Dispersion test (PERMDISP)
+  disp <- betadisper(dist, group = meta[["MusselAffectedYear"]])
+  disp_anova <- anova(disp)
+  disp_tukey <- TukeyHSD(disp)
+  
+  return(list(
+    beta_plot = plot,
+    stats_table = permanova,
+    dispersion_anova = disp_anova,
+    dispersion_tukey = disp_tukey
+  ))
+}
+```
+
+
+# Glade and Snakeden
+```{r}
+run_beta(ps_all, group_var = "Stream")
+```
+
+
+# Glade
+```{r}
+# 2023 vs. 2024 
+run_beta(ps.filter_g, group_var = "Year")
+
+
+# Control vs. Mussel Affected 2023
+run_beta(ps.filter_g_2023, group_var = "MusselAffected")
+
+
+# Control vs. Mussel Affected 2024
+run_beta(ps.filter_g_2024, group_var = "MusselAffected")
+
+
+# 2023 vs. 2024 in MusselAffected
+run_beta(ps.filter_g_m, group_var = "Year")
+
+
+# Year * MusselAffected interaction
+run_beta_interaction(ps.filter_g)
+```
+
+
+# Snakeden
+```{r}
+# 2023 vs. 2024 
+run_beta(ps.filter_s, group_var = "Year")
+
+
+# Control vs. Mussel Affected 2023
+run_beta(ps.filter_s_2023, group_var = "MusselAffected")
+
+
+# Control vs. Mussel Affected 2024
+run_beta(ps.filter_s_2024, group_var = "MusselAffected")
+
+
+# 2023 vs. 2024 in MusselAffected
+run_beta(ps.filter_s_m, group_var = "Year")
+
+
+# Year * MusselAffected interaction
+run_beta_interaction(ps.filter_s)
+```
+
+
+# TAXONOMIC COMPOSITION
+
+
+## Phylum abundance barplot for all samples
+```{r By phylum for all samples}
+# Convert to relative abundances
+ps.rel = transform_sample_counts(ps_all, function(x) x/sum(x)*100)
+
+
+# Agglomerate taxa
+glom <- tax_glom(ps.rel, taxrank = 'Phylum', NArm = FALSE)
+ps.melt <- psmelt(glom)
+
+
+# Change to character for easy-adjusted level
+ps.melt$Phylum <- as.character(ps.melt$Phylum)
+
+
+ps.melt <- ps.melt %>%
+           group_by(Year, Phylum) %>%
+           mutate(median=median(Abundance))
+
+
+# Select group median > 0.05
+keep <- unique(ps.melt$Phylum[ps.melt$median > 0.05])
+ps.melt$Phylum[!(ps.melt$Phylum %in% keep)] <- "< 0.5%"
+
+
+# Group the same rows together
+ps.melt_sum <- ps.melt %>%
+               group_by(Sample, Year, Phylum) %>%
+               summarise(Abundance=sum(Abundance))
+
+
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+
+
+# Create phylum abundance barplot
+ggplot(ps.melt_sum, aes(x = Sample, y = Abundance, fill = Phylum)) + 
+       geom_bar(stat = "identity", aes(fill=Phylum)) + 
+       scale_fill_manual(values = mycolors) +
+       labs(x="", y="%") +
+       facet_wrap(~Year, scales= "free_x", nrow=1) +
+       theme_classic() + 
+       theme(strip.background = element_blank(), 
+             axis.text.x.bottom = element_text(angle = -90))
+```
+
+
+## Genus abundance barplot for all samples
+
+
+```{r By genus for all samples}
+# Convert to relative abundances
+ps.rel = transform_sample_counts(ps_all, function(x) x/sum(x)*100)
+
+
+# Agglomerate taxa
+glom <- tax_glom(ps.rel, taxrank = 'Genus', NArm = FALSE)
+ps.melt <- psmelt(glom)
+
+
+# Change to character for easy-adjusted level
+ps.melt$Genus <- as.character(ps.melt$Genus)
+
+
+ps.melt <- ps.melt %>%
+           group_by(Year, Genus) %>%
+           mutate(median=median(Abundance))
+
+
+# Select group median > 1
+keep <- unique(ps.melt$Genus[ps.melt$median > 1])
+ps.melt$Genus[!(ps.melt$Genus %in% keep)] <- "< 1%"
+
+
+# Group the same rows together
+ps.melt_sum <- ps.melt %>%
+               group_by(Sample, Year, Genus) %>%
+               summarise(Abundance=sum(Abundance))
+
+
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+
+
+# Create genus abundance barplot
+ggplot(ps.melt_sum, aes(x = Sample, y = Abundance, fill = Genus)) + 
+       geom_bar(stat = "identity", aes(fill=Genus)) + 
+       scale_fill_manual(values = mycolors) +
+       labs(x="", y="%") +
+       facet_wrap(~Year, scales= "free_x", nrow=1) +
+       theme_classic() + 
+       theme(strip.background = element_blank(), 
+             axis.text.x.bottom = element_text(angle = -90))
+```
+
+
+# DIFFERENTIAL ABUNDANCE
+
+
+## DESeq2
+```{r DESeq2 for mussel zone}
+# Factorize for DESeq2
+sample_data(ps.filter_m)$Year<- as.factor(sample_data(ps.filter_m)$Year) 
+ps.taxa <- tax_glom(ps.filter_m, taxrank = 'Genus', NArm = FALSE)
+
+
+# Pairwise comparison between stream combinations
+ps.taxa.sub <- subset_samples(ps.taxa, Year %in% c("2023", "2024"))
+
+
+# Filter sparse features, with > 90% zeros
+ps.taxa.pse.sub <- prune_taxa(rowSums(otu_table(ps.taxa.sub) == 0) < 
+                              ncol(otu_table(ps.taxa.sub)) * 0.9, ps.taxa.sub)
+ps.ds = phyloseq_to_deseq2(ps.taxa.pse.sub, ~Year)
+
+
+# Use alternative estimator on a condition of "every gene contains a sample with a zero"
+ds <- estimateSizeFactors(ps.ds, type="poscounts")
+ds = DESeq(ds, test="Wald", fitType="parametric")
+alpha = 0.05 
+res = results(ds, alpha=alpha)
+res = res[order(res$padj, na.last=NA), ]
+taxa_sig = rownames(res[1:20,]) # Select bottom 20 with lowest p.adj values
+ps.taxa.rel <- transform_sample_counts(ps.filter_m, function(x) x/sum(x)*100)
+ps.taxa.rel.sig <- prune_taxa(taxa_sig, ps.taxa.rel)
+ps.taxa.rel.sig <- prune_samples(colnames(otu_table(ps.taxa.pse.sub)), ps.taxa.rel.sig)
+```
+
+
+## ANCOM-BC2 between upstream and downstream for both 2023 and 2024
+
+
+<https://www.bioconductor.org/packages/release/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC2.html> <https://www.bioconductor.org/packages/devel/bioc/manuals/ANCOMBC/man/ANCOMBC.pdf>
+
+
+```{r ANCOM for both years}
+set.seed(123)
+
+
+# Run ancombc2 function
+output.family = ancombc2(data = ps_all, tax_level = "Family",
+                        fix_formula = "Location + Year", rand_formula = "(1 | Year)",
+                        group = "Location", 
+                        struc_zero = TRUE, neg_lb = TRUE,
+                        n_cl = 4, verbose = TRUE,
+                        global = TRUE, pairwise = TRUE, dunnet = TRUE)
+
+
+# Primary analysis
+res_family = output.family$res
+
+
+# Results for location
+df_location = res_family %>%
+              dplyr::select(taxon, contains("Location"))
+df_fig_location = df_location %>%
+                  dplyr::filter(p_LocationUpstream < 0.05) %>%
+                  dplyr::mutate(lfc = round(lfc_LocationUpstream, 2),
+                                color = ifelse(passed_ss_LocationUpstream == 1, "black", "white")) %>%
+                                dplyr::arrange(taxon)
+df_fig_location
+
+
+lo = floor(min(df_fig_location$lfc))
+up = ceiling(max(df_fig_location$lfc))
+mid = (lo + up) / 2
+fig_location = df_fig_location %>%
+               ggplot(aes(x = "Downstream Samples", y = taxon, fill = lfc)) +
+               geom_tile(color = "black") +
+               scale_fill_gradient2(low = "lightblue", high = "navy", mid = "blue",
+               na.value = "white", midpoint = mid, limit = c(lo, up), name = NULL) +
+               geom_text(aes(label = lfc, color = color), size = 4) +
+               scale_color_identity(guide = "none") +
+               labs(x = NULL, y = NULL, title = "Differentually Abundant Families as Compared to Upstream Samples") +
+               theme_minimal() +
+               theme(plot.title = element_text(hjust = 0.5))
+fig_location
+```
+
+
+## Between upstream and downstream in 2023.
+
+
+```{r}
+sample_data(ps.filter_2023)$donor_status <- as.factor(sample_data(ps.filter_2023)$Location)
+set.seed(123)
+pseq_perm = ps.filter_2023 #make sure to choose either your
+metadata_perm = microbiome::meta(pseq_perm)
+metadata_perm$Location = sample(metadata_perm$Location)
+phyloseq::sample_data(pseq_perm) = metadata_perm
+
+
+set.seed(123)
+# It should be noted that we have set the number of bootstrap samples (B) equal
+# to 10 in the 'trend_control' function for computational expediency.
+# However, it is recommended that users utilize the default value of B,
+# which is 100, or larger values for optimal performance.
+output.family = ancombc2(data = pseq_perm, tax_level = "Family",
+ fix_formula = "Location", rand_formula = NULL,
+ p_adj_method = "holm", pseudo_sens = TRUE,
+ prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+ group = "Location", struc_zero = TRUE, neg_lb = TRUE,
+ alpha = 0.05, n_cl = 2, verbose = TRUE,
+ global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = TRUE,
+ iter_control = list(tol = 1e-2, max_iter = 20,
+ verbose = TRUE),
+ em_control = list(tol = 1e-5, max_iter = 100),
+ lme_control = lme4::lmerControl(),
+ mdfdr_control = list(fwer_ctrl_method = "holm", B = 100),
+ trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+ nrow = 2,
+byrow = TRUE),
+ matrix(c(-1, 0, 1, -1),
+nrow = 2,
+byrow = TRUE),
+ matrix(c(1, 0, 1, -1),
+nrow = 2,
+byrow = TRUE)),
+ node = list(2, 2, 1),
+solver = "ECOS",
+B = 100))
+
+
+res_family = output.family$res
+df_location = res_family %>%
+ dplyr::select(taxon, contains("Location"))
+df_fig_location = df_location %>%
+ dplyr::filter(p_LocationUpstream < 0.05) %>%
+ #dplyr::filter(diff_donor_statusPD == 1) %>% ##Nothing was DA, so switched to p-value
+ dplyr::mutate(lfc = round(lfc_LocationUpstream, 2),
+ color = ifelse(passed_ss_LocationUpstream == 1, "black", "white")) %>%
+ dplyr::arrange(taxon)
+df_fig_location
+
+
+lo = floor(min(df_fig_location$lfc))
+up = ceiling(max(df_fig_location$lfc))
+mid = (lo + up) / 2
+fig_location = df_fig_location %>%
+ ggplot(aes(x = "Downstream Samples", y = taxon, fill = lfc)) +
+ geom_tile(color = "black") +
+ scale_fill_gradient2(low = "lightblue", high = "navy", mid = "blue",
+ na.value = "white", midpoint = mid, limit = c(lo, up),
+name = NULL) +
+ geom_text(aes(label = lfc, color = color), size = 4) +
+ scale_color_identity(guide = "none") +
+ labs(x = NULL, y = NULL, title = "Differentually Abundant Families as Compared to Upstream Samples") +
+ theme_minimal() +
+ theme(plot.title = element_text(hjust = 0.5))
+fig_location
+```
+
+
+# PICRUSt2 FUNCTIONAL DIVERSITY
+
+
+# NETWORK ANALYSIS
+```{r}
+# taxa.sums = as.data.frame(taxa_sums(ps.network))
+# p <- ggplot(taxa.sums, aes(x=taxa_sums(ps.network))) +
+#   geom_histogram(binwidth = 10)
+# p
+ps.network <- tax_glom(ps_all, taxrank = "Genus")
+ps.network <- prune_taxa(taxa_sums(ps.network) > 10, ps.network)
+ps.clr_prune <- microbiome::transform(ps.prune, transform = "clr")
+sample_data(ps.clr_prune)$LocYear <- as.factor(sample_data(ps.clr_prune)$LocYear)
+
+
+```
